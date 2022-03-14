@@ -1,0 +1,119 @@
+#!/usr/bin/python
+
+import sys
+import os
+import string
+import re
+import time
+
+_restoreCommand_ = '/bin/tar'
+_newFileIdentifier_ = 'New archive: '
+_separatorLineIntro_ = '=========='
+
+class FileRestorer:
+  def __init__(self, indexName):
+    ## Read the index file, and remember all the entries.
+    indexFile = open(indexName, 'r')
+    self.m_fileList = []
+    self.m_archiveFileList = []
+    while 1:
+      inputLine = indexFile.readline()
+      ## Stop looping when we reach the end of the file.
+      if inputLine == '':
+        break
+      # end if
+
+      ## Remove any trailing newline.
+      if inputLine[-1] == '\n':
+        inputLine = inputLine[:-1]
+      # end if
+
+      ## Process the line as appropriate.
+      if inputLine == '':
+        continue
+      elif inputLine[:len(_separatorLineIntro_)] == _separatorLineIntro_:
+        continue
+      elif inputLine[:len(_newFileIdentifier_)] == _newFileIdentifier_:
+        ## Found a new archive filename, remember it for later.
+        self.m_archiveFileList.append(inputLine[len(_newFileIdentifier_):])
+      else:
+        ## Found a new index entry, remember the filename and the index of
+        ## the current archive filename.
+        self.m_fileList.append((inputLine, len(self.m_archiveFileList) - 1))
+      # end if
+    # end while
+  # end def
+
+  def __del__(self):
+    pass
+  # end
+
+  def restore(self, fileRegExString):
+    ## Construct a dictionary which maps archive file names to lists of
+    ## files which should be extracted.
+    targetFilesDict = self.buildTargetFilesDict(fileRegExString)
+
+    ## Now extract from each archive in turn.
+    for archiveFileName in targetFilesDict.keys():
+      targetFileNameList = targetFilesDict[archiveFileName]
+      commandArguments = ['-zxvf', archiveFileName] + targetFileNameList
+      self.runCommand(_restoreCommand_, commandArguments);
+    # end for
+  # end def
+  
+  def buildTargetFilesDict(self, fileRegExString):
+    fileRegEx = re.compile(fileRegExString)
+    targetFilesDict = {}
+    ## Check each file in the archive.
+    for fileEntry in self.m_fileList:
+      fileName = fileEntry[0]
+      ## Does the regular expression match the current file?
+      if fileRegEx.match(fileName):
+        ## Yes!  Remember it for restoring later.  It's important to
+        ## maintain the association between the filename and the
+        ## archive file in which it's stored, so we use a dict here.
+        archiveFileName = self.m_archiveFileList[fileEntry[1]]
+        if targetFilesDict.has_key(archiveFileName):
+          targetFilesDict[archiveFileName].append(fileName)
+        else:
+          targetFilesDict[archiveFileName] = [fileName]
+        # end if
+      # end if
+    # end for
+    return targetFilesDict
+  # end def
+
+  def runCommand(self, commandName, commandArguments):
+    print ('Running: %s %s\n'
+           % (commandName, string.join(commandArguments, ' ')))
+    argumentCopy = [commandName] + commandArguments
+    returnValue = os.spawnv(os.P_WAIT, commandName, argumentCopy)
+    if returnValue != 0:
+      sys.stderr.write('Non-zero return value from %s\n'
+                       % string.join(argumentCopy))
+    # end if
+    return returnValue
+  # end def
+# end class
+
+def parseArgs(argv):
+  if len(argv) != 3:
+    usage(argv[0])
+    sys.exit(255)
+  # end if
+  indexFileName = argv[1]
+  fileRegExString = argv[2]
+  return (indexFileName, fileRegExString)
+# end def
+
+def usage(progName):
+  sys.stderr.write(
+    ('Usage: %s indexFileName fileRegEx\n' % progName))
+# end def
+
+import pdb
+if __name__=='__main__':
+  indexFileName, fileRegexString = parseArgs(sys.argv)
+  fileRestorer = FileRestorer(indexFileName)
+  fileRestorer.restore(fileRegexString)
+# end if

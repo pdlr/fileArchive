@@ -1,0 +1,2 @@
+LABEL=FA_BACKUP     /backup         ext4    noauto,rw,noexec,nosuid,nodev,async     0       0
+

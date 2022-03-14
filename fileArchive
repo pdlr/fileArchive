@@ -1,0 +1,520 @@
+#!/usr/bin/python
+
+# Simple backup script.  Creates a series of tarballs containing
+# backed-up data, plus an index showing what files are saved in what
+# tarball.  Does semi-incremental backups, too.  See the usage message
+# for more information.
+#
+# Copyright 2003-2009 Carnegie Mellon University
+# David LaRose, dlr@cs.cmu.edu
+
+import sys
+import os
+import string
+import re
+import time
+
+_archiveCommand_ = '/bin/tar'
+_archiveFileExtension_ = '.tgz'
+_excludeExtension_ = '.noBackup'
+
+# The first two entries in this list are not necessary if we trust tar
+# to clean its input.
+_excludeReList_ = [
+  # r'[;<>|`&$!]', # Scary filenames that might contain shell commands.
+  r'.{250}',     # Long filenames that might overflow tar input buffer.
+  r'.*\.o$'      # Object files.
+]
+_excludeReObjectList_ = map(re.compile, _excludeReList_)
+_newFileIdentifier_ = 'New archive: '
+_targetArchiveSize_ = 0.5 * 1024**3
+
+## _deleteCharactersReObject_ = re.compile(r'[\n]')
+## _escapeCharactersReObject_ = re.compile('[;<>*|`&$!#\(\)\[\]\{\}:\'"/]')
+
+## def cleanString(commandString):
+##   string0 = re.sub(_deleteCharactersReObject_, r'', commandString, 0)
+##   string1 = re.sub(_escapeCharactersReObject_, r'\\\g<0>', commandString, 0)
+##   return string1
+## # end def
+
+class FileArchive:
+  def __init__(self, archiveFileNameBase, cutoffDate, targetName,
+               archiveFileIndex=0, targetArchiveSize=_targetArchiveSize_):
+    self.m_archiveFileNameBase = os.path.realpath(archiveFileNameBase)
+    self.m_archiveFileIndex = archiveFileIndex
+    self.m_archiveName = self.getArchiveName()
+    self.m_archiveSize = 0
+    self.m_cutoffDate = cutoffDate
+    self.m_indexName = '%s_index.txt' % self.m_archiveFileNameBase
+    self.m_targetArchiveSize = targetArchiveSize
+
+    if self.m_archiveFileIndex == 0:
+      try:
+        self.backupOldArchives(self.m_indexName)
+      except:
+        print ("%s: Warning, failed to backup %s."
+               % (sys.argv[0], self.m_indexName))
+      # end try
+    # end if
+
+    # Prepare files.
+    self.setupArchiveFiles()
+    
+    if targetName[0] == '/':
+      # Tar issues warnings if the archived filenames begin with "/", so
+      # arrange that targetName doesn't begin with "/".
+      currentDirectory = os.path.realpath(os.curdir)
+      os.chdir('/')
+      self.add(targetName[1:])
+      self.buildArchive()
+      os.chdir(currentDirectory)
+    else:
+      self.add(targetName)
+      self.buildArchive()
+   # end if
+  # end def
+
+  def __del__(self):
+    pass
+  # end
+
+  # Private methods.
+  def add(self, targetName):
+    # Files that match our exclude list should not be backed up.
+    for reObj in _excludeReObjectList_:
+      if reObj.match(targetName):
+        return
+      # end if
+    # end for
+
+    # Provide a way for the user to tag a file as not-to-be-backed-up.
+    if os.path.isfile(targetName + _excludeExtension_):
+      return
+    # end
+
+    # Is target a file or a directory
+    if (os.path.isdir(targetName)
+        & (not os.path.islink(targetName))):
+      # It's a directory, recurse over all directory entries.
+      try:
+        fileNameList = os.listdir(targetName)
+      except:
+        print ("%s.add(): Warning, failed to recurse into %s."
+                 % (sys.argv[0], targetName))
+        fileNameList = []
+      # end try
+      fileNameList = [os.path.join(targetName, x) for x in fileNameList]
+      fileNameList.sort()
+      for fileName in fileNameList:
+        self.add(fileName)
+      # end for
+    else:
+      # It's a file, Save it to the archive, provided its modification
+      # timestamp is appropriate.
+
+      # First, get stat information on the file.
+      try:
+        statStruct = os.lstat(targetName)
+      except OSError:
+        print ("%s.add(): Warning, failed to stat file %s."
+               % (sys.argv[0], targetName))
+        return
+      # end try
+        
+      if(self.m_cutoffDate):
+        modificationTime = statStruct.st_ctime
+        if modificationTime < self.m_cutoffDate:
+          # Modification timestamp fails the test.  Do nothing.
+          return
+        # end if
+      # end if
+
+      # Update index file.
+      f = open(self.m_indexName, 'a')
+      f.write(targetName + '\n')
+      f.close()
+      
+      # And add the file to the backup list.
+      f = open(self.m_backupListName, 'a')
+      f.write(targetName + '\n')
+      f.close()
+      self.m_archiveSize += statStruct.st_size
+
+      # When the list is big enough, create an archive.
+      if self.m_archiveSize >= self.m_targetArchiveSize:
+        self.buildArchive()        
+        self.m_archiveFileIndex += 1
+        self.setupArchiveFiles()
+      # end if
+    # end if
+  # end def
+
+  def backupIndexFile(self, indexFileName, backupIndexFileName):
+    identifierLength = len(_newFileIdentifier_)
+    indexFile = open(indexFileName)
+    backupIndexFile = open(backupIndexFileName, 'w')
+    while(1):
+      # Read each line.
+      indexLine = indexFile.readline()
+
+      # Break if we've reached the end of the file.
+      if indexLine == '':
+        break
+      # end if
+
+      # Check to see if we've found a line specifying an archive file.
+      if indexLine[:identifierLength] == _newFileIdentifier_:
+        # Remove any trailing newline character.
+        if indexLine[-1] == '\n':
+          indexLine = indexLine[:-1]
+        # end if
+
+        # Modify the archive file name.
+        indexLine += '.backup\n'
+      # end if
+      backupIndexFile.write(indexLine)
+    # end while
+    backupIndexFile.close()
+    indexFile.close()
+    os.unlink(indexFileName)
+  # end def
+  
+  def backupOldArchives(self, indexFileName):
+    # First delete the _really_ old archive.
+    obseleteIndexFileName = indexFileName + '.backup'
+    if os.path.isfile(obseleteIndexFileName):
+      archiveFileList, contentsFileList = (
+        self.extractFileList(obseleteIndexFileName))
+      for fileName in (archiveFileList + contentsFileList):
+        try:
+          os.unlink(fileName)
+        except:
+          print ("%s.backupOldArchives(): Warning, failed to unlink %s."
+                 % (sys.argv[0], fileName))
+        # end try
+      # end for
+      try:
+        os.unlink(obseleteIndexFileName)
+      except:
+        print ("%s.backupOldArchives(): Warning, failed to unlink %s."
+                 % (sys.argv[0], obseleteIndexFileName))
+      # end try
+    # end if
+
+    # Now backup the old archive.
+    if os.path.isfile(indexFileName):
+      archiveFileList, contentsFileList = self.extractFileList(indexFileName)
+      self.backupIndexFile(indexFileName, indexFileName + '.backup')
+      for fileName in (archiveFileList + contentsFileList):
+        if os.path.isfile(fileName):
+          os.rename(fileName, fileName + '.backup')
+        else:
+          sys.stderr.write(
+            '%s: Warning -- Archive file %s appears to be missing.\n'
+            % (sys.argv[0], fileName))
+        # end if
+      # end for
+    # end if
+  # end def
+
+  def buildArchive(self):
+    returnValue = self.runCommand(
+      _archiveCommand_,
+      ['--gzip', '--create', '--file=%s' % self.m_archiveName,
+       '--files-from=%s' % self.m_backupListName])
+    if returnValue == 0:
+      # No error, so no need to keep m_backupList
+      os.unlink(self.m_backupListName)
+    # end if
+  # end def
+
+  def buildContentsFileName(self, archiveFileName):
+    # Archive name generally looks something like this:  foo_3.tgz .
+    # First get rid of the ".tgz", or whatever.
+    archiveFileNameNoExt = os.path.splitext(archiveFileName)[0]
+    
+    # Now get rid of the "_#" part.
+    index = len(archiveFileNameNoExt) - 1
+    while archiveFileNameNoExt[index] != '_':
+      index -= 1
+      if index <= 0:
+        raise (ValueError,
+               ('Bad archiveFileName doesn\'t have an underscore: %s'
+                % archiveFileName))
+      # end if
+    # end while
+    archiveFileNameNoNumber = archiveFileNameNoExt[0:index]
+
+    # But save the "_#" part for later.
+    archiveNumberString = archiveFileNameNoExt[index:]
+
+    # Finally, build the contents file name.
+    contentsFileName = (archiveFileNameNoNumber + 'Files'
+                        + archiveNumberString + '.txt')
+    return contentsFileName
+  # end def
+
+  def extractFileList(self, indexFileName):
+    identifierLength = len(_newFileIdentifier_)
+    archiveFileNameList = []
+    contentsFileNameList = []
+    indexFile = open(indexFileName)
+    while(1):
+      # Read each line.
+      indexLine = indexFile.readline()
+
+      # Break if we've reached the end of the file.
+      if indexLine == '':
+        break
+      # end if
+
+      # Parse line to extract archive file names.
+      if indexLine[:identifierLength] == _newFileIdentifier_:
+        if indexLine[-1] == '\n':
+          archiveFileName = indexLine[identifierLength:-1]
+        else:
+          archiveFileName = indexLine[identifierLength:]
+        # end if
+        archiveFileNameList.append(archiveFileName)
+        contentsFileName = self.buildContentsFileName(archiveFileName)
+        if os.path.isfile(contentsFileName):
+          contentsFileNameList.append(contentsFileName)
+        # end if
+      # end if
+    # end while
+    indexFile.close()
+    return (archiveFileNameList, contentsFileNameList)
+  # end def
+  
+  def getArchiveName(self):
+    return '%s_%04d%s' % (self.m_archiveFileNameBase, self.m_archiveFileIndex,
+                          _archiveFileExtension_)
+  #end def
+  
+  def setupArchiveFiles(self):
+    # First set up file names.
+    self.m_archiveName = self.getArchiveName()
+    self.m_backupListName = self.buildContentsFileName(self.m_archiveName)
+
+    # Make sure backup list exists and is not already full of entries.
+    self.runCommand('/bin/touch', [self.m_backupListName])
+
+    # Update index.
+    f = open(self.m_indexName, 'a')
+    f.write('\n')
+    f.write('===========================================================\n')
+    f.write(_newFileIdentifier_ + self.m_archiveName + '\n')
+    f.write('===========================================================\n')
+    f.close()
+
+    # And reset count of data already backed up.
+    self.m_archiveSize = 0
+  # end def
+  
+  def numberOfVolumes(self):
+    return self.m_archiveFileIndex + 1
+  # end def
+
+  def runCommand(self, commandName, commandArguments):
+    argumentCopy = [commandName] + commandArguments
+    returnValue = os.spawnv(os.P_WAIT, commandName, argumentCopy)
+    if returnValue != 0:
+      sys.stderr.write('Non-zero return value from %s\n'
+                       % ' '.join(argumentCopy))
+    # end if
+    return returnValue
+  # end def
+  
+# end class
+
+
+def isMounted(mountName):
+  return (os.system('/bin/grep -q %s /proc/mounts' % mountName) == 0)
+# end def
+  
+
+def monthLength(monthIndex, yearIndex):
+  # February is different on leap years.  Handle it first
+  if monthIndex == 2:
+    # Is it a leap year?
+    if (int(yearIndex) / 4) == 0:
+      # Yes, it's a leap year
+      return 29
+    # end if
+    # No, not a leap year
+    return 28
+  # end if
+  if((monthIndex == 4) | (monthIndex == 6)
+     | (monthIndex == 9) | (monthIndex == 11)):
+    return 30
+  # end if
+  return 31
+# end def
+    
+def parseArgs(argv):
+  if len(argv) < 3:
+    usage(argv[0])
+    sys.exit(255)
+  # end if
+  cutoffDate = None
+  mountName = None
+  argumentIndex = 1
+  while 1:
+    if argv[argumentIndex] == '-d':
+      if (len(argv) - argumentIndex) < 4:
+        usage(argv[0])
+        sys.exit(255)
+      # end if
+      cutoffDate = parseDateString(argv[argumentIndex + 1])
+      if not cutoffDate:
+        sys.stderr.write('Couldn\'t parse date argument\n')
+        usage(argv[0])
+        sys.exit(255)
+      # end if
+      argumentIndex += 2
+    elif argv[argumentIndex] == '-m':
+      if (len(argv) - argumentIndex) < 4:
+        usage(argv[0])
+        sys.exit(255)
+      # end if
+      mountName = argv[argumentIndex + 1]
+      argumentIndex += 2
+    else:
+      break
+    # end if
+  # end while
+  archiveFileNameBase = sys.argv[argumentIndex]
+  argumentIndex += 1
+  targetNameList = sys.argv[argumentIndex:]
+  return archiveFileNameBase, cutoffDate, targetNameList, mountName
+# end def
+
+def parseDateString(dateString):
+  dateBits = dateString.split('-')
+  if len(dateBits) != 3:
+    return parseRelativeDateString(dateString)
+  # end if
+  try:
+    year = int(dateBits[0])
+    month = int(dateBits[1])
+    day = int(dateBits[2])
+  except:
+    return None
+  # end try
+  # Halfhearted sanity check
+  if ((month > 12) | (day >> 31)):
+    return None
+  # end if
+  try:
+    cutoffDate = int(time.mktime((year, month, day, 0, 0, 0, -1, -1, -1)))
+  except:
+    return None
+  # end try
+  return cutoffDate
+# end def
+
+def parseRelativeDateString(dateString):
+  localTimeDayOfTheWeekIndex = -3
+  localTimeDayOfTheMonthIndex = 2
+  localTimeMonthOfTheYearIndex = 1
+  localTimeYearIndex = 0
+  dayMapping = {'Monday' : 0,
+                'Tuesday' : 1,
+                'Wednesday' : 2,
+                'Thursday' : 3,
+                'Friday' : 4,
+                'Saturday' : 5,
+                'Sunday' : 6}
+  if not dateString in dayMapping:
+    return None
+  # end if
+  currentTime = time.localtime()
+  dayDelta = currentTime[localTimeDayOfTheWeekIndex] - dayMapping[dateString]
+  while dayDelta < 0:
+    dayDelta += 7
+  # end if
+  selectedDay = currentTime[localTimeDayOfTheMonthIndex] - dayDelta
+  selectedMonth = currentTime[localTimeMonthOfTheYearIndex]
+  selectedYear = currentTime[localTimeYearIndex]
+  if selectedDay < 1:
+    selectedDay += monthLength(currentTime[localTimeMonthOfTheYearIndex],
+                               currentTime[localTimeYearIndex])
+    selectedMonth -= 1
+  # end if
+  if selectedMonth < 1:
+    selectedMonth = 12
+    selectedYear -= 1
+  # end if
+  cutoffDate = int(time.mktime((selectedYear, selectedMonth, selectedDay,
+                                0, 0, 0, -1, -1, -1)))
+  return cutoffDate
+# end def
+
+def usage(progName):
+  sys.stderr.write(
+    (('Usage: %s [-d yyyy-mm-dd] [-m mountName] archiveFileNameBase fileName0 '
+      % progName)
+     + '[fileName1 [fileName2 ...] ]\n' 
+     + '  For example:\n'
+     + '    %s /backup/myArchive /home /etc /var/spool/mail\n' % progName
+     + '  Will backup /home, /etc/, and /var/spool/mail\n\n'
+     + '    %s -d 2003-07-01 /backup/myArchive /home\n' % progName
+     + '  Will backup files in /home which were modified since '
+     + 'July 1, 2003.\n'
+     + '    %s -d Sunday /backup/myArchive /home\n' % progName
+     + '  Will backup files in /home which were modified since last Sunday.\n'
+     + '  \n'
+     + '  Supplying the -m option will cause the mount point to be mounted\n'
+     + '    automatically, if necessary, and then unmounted automatically,\n'
+     + '    if appropriate.\n\n'
+     + 'To prevent specific files/directories from being backed up, create a\n'
+     + 'file in the same directory as the not-to-be-backed up file/directory\n'
+     + 'that has the same name, plus an additional ".noBackup" extension.\n'
+     + 'For example:\n'
+     + ' > mkdir ~/tmp\n'
+     + ' > touch ~/tmp.nobackup\n'
+     + ' > dd if=/dev/urandom of=~/useless.dat bs=1024 count=1024\n'
+     + ' > touch ~/useless.dat.noBackup\n'))
+# end def
+
+
+if __name__=='__main__':
+  archiveFileNameBase, cutoffDate, targetNameList, mountName = (
+    parseArgs(sys.argv))
+
+  needsUmount = False
+  if not (mountName is None):
+    if not isMounted(mountName):
+      returnValue = os.system('/bin/mount %s' % mountName)
+      if not isMounted(mountName):
+        raise IOError('Failed (with return value %d) to mount %s'
+                      % (returnValue, mountName))
+      # end if
+      needsUmount = True
+    # end if    
+  # end if
+     
+  status = 0
+  archiveFileIndex = 0;
+  for targetName in targetNameList:
+    # try:
+      fileArchive = FileArchive(archiveFileNameBase, cutoffDate, targetName,
+                                archiveFileIndex)
+      archiveFileIndex = fileArchive.numberOfVolumes()
+      del fileArchive
+    # except:
+    #   sys.stderr.write('Error occurred while dumping %s\n' % targetName)
+    #   archiveFileIndex = fileArchive.numberOfVolumes()
+    # # end try
+  # end for
+
+  if not (mountName is None):
+    if needsUmount:
+      os.system('/bin/sync')
+      os.system('/bin/umount %s' % mountName)
+    # end if
+  # end if
+  
+  # sys.exit(status)
+# end if

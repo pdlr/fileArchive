@@ -1,0 +1,36 @@
+# To use this, add an entry for /backup in etc/fstab.  /backup doesn't
+# have to always be mounted... fileArchive will try to mount it
+# automatically.  This script assumes the following directory
+# structure:
+#
+# /backup
+#   /tar_Monday
+#   /tar_Tuesday
+#   /tar_Wednesday
+#   /tar_Thursday
+#   /tar_Friday
+#   /tar_Saturday
+#   /tar_Sunday
+#   /tar_monthly
+#   /tar_semiannual
+#   /tar_annual
+#
+# Weekly backups will be overwritten after two weeks.
+# Monthly backups will be overwritten after two months.
+
+# Perform nightly incremental backup at 2:06am, Mon-Sat.
+06 02 * * 1-6 root /usr/bin/nice -1 /root/bin/fileArchive -d Sunday -m /backup /backup/tar_`/bin/date +\%A`/incremental /etc /home/local/etc /home/local/src /var/mail /root /home/dlr
+
+# Perform weekly full backup at 2:06am on Sunday.
+06 02 * * sun root /usr/bin/nice -1 /root/bin/fileArchive -m /backup /backup/tar_Sunday/full /etc /home/local/etc /home/local/src /var/mail /root /home/dlr
+
+# Perform monthly full backup at 7:00am on the first of the month.
+00 07 01 * * root /root/bin/fileArchive -m /backup /backup/tar_monthly/full /etc /home/local/etc /home/local/src /var/mail /root /home/dlr
+
+# Perform semiannual full backup at 4:11am on the approximate equinoxes.
+11 04 20 03 * root /root/bin/fileArchive -m /backup /backup/tar_semiannual/full /etc /home/local/etc /home/local/src /var/mail /root /home/dlr
+11 04 22 09 * root /root/bin/fileArchive -m /backup /backup/tar_semiannual/full /etc /home/local/etc /home/local/src /var/mail /root /home/dlr
+
+# Perform annual full backup at 12:01am on new year's day.
+01 00 01 01 * root /root/bin/fileArchive -m /backup /backup/tar_annual/full /etc /home/local/etc /home/local/src /var/mail /root /home/dlr
+
