@@ -1,5 +1,5 @@
 # fileArchive
-This is a simple collection of scripts for automated backup of a Unix/Linux machine to locally attached hard drive.  I wrote it in the mid-1990s, when I didn't have an easy backup solution.  It's worked well since then, so I'm still using it, even though there are now many other backup options easily available.
+This is a simple collection of scripts for automated backup of a Unix/Linux machine to a locally attached hard drive.  I wrote it in the mid-1990s, when I didn't have an easy backup solution.  It's worked well since then, so I'm still using it, even though there are now many other backup options easily available.
 
 ## How it Works
 Everything is driven by the cron service.  Backups are made by firing off a python script that spiders your filesystem, creating  a series of .tgz files containing backed-up data, plus an index showing what files are saved in what tarball.  The default configuration does a full backup every Sunday morning, and an incremental backup every other day of the week.  Incremental backups are based on the file modification timestamp, so -- for example -- Thursday's incremental backup includes everything that's changed since the last Sunday.
