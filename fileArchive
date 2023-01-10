@@ -40,7 +40,8 @@ _targetArchiveSize_ = 0.5 * 1024**3
 
 class FileArchive:
   def __init__(self, archiveFileNameBase, cutoffDate, targetName,
-               archiveFileIndex=0, targetArchiveSize=_targetArchiveSize_):
+               archiveFileIndex=0, targetArchiveSize=_targetArchiveSize_,
+               backupFlag=True):
     self.m_archiveFileNameBase = os.path.realpath(archiveFileNameBase)
     self.m_archiveFileIndex = archiveFileIndex
     self.m_archiveName = self.getArchiveName()
@@ -49,13 +50,17 @@ class FileArchive:
     self.m_indexName = '%s_index.txt' % self.m_archiveFileNameBase
     self.m_targetArchiveSize = targetArchiveSize
 
-    if self.m_archiveFileIndex == 0:
-      try:
-        self.backupOldArchives(self.m_indexName)
-      except:
-        print ("%s: Warning, failed to backup %s."
-               % (sys.argv[0], self.m_indexName))
-      # end try
+    if backupFlag:
+      if self.m_archiveFileIndex == 0:
+        try:
+          self.backupOldArchives(self.m_indexName)
+        except:
+          print ("%s: Warning, failed to backup %s."
+                 % (sys.argv[0], self.m_indexName))
+        # end try
+      # end if
+    else: # if backupFlag
+      self.removeOldArchives(self.m_indexName)
     # end if
 
     # Prepare files.
@@ -217,7 +222,7 @@ class FileArchive:
       # end for
     # end if
   # end def
-
+  
   def buildArchive(self):
     returnValue = self.runCommand(
       _archiveCommand_,
@@ -316,6 +321,28 @@ class FileArchive:
     return self.m_archiveFileIndex + 1
   # end def
 
+  def removeOldArchives(self, indexFileName):
+    # Delete the old archive.
+    if os.path.isfile(indexFileName):
+      archiveFileList, contentsFileList = (
+        self.extractFileList(indexFileName))
+      for fileName in (archiveFileList + contentsFileList):
+        try:
+          os.unlink(fileName)
+        except:
+          print ("%s.backupOldArchives(): Warning, failed to unlink %s."
+                 % (sys.argv[0], fileName))
+        # end try
+      # end for
+      try:
+        os.unlink(indexFileName)
+      except:
+        print ("%s.backupOldArchives(): Warning, failed to unlink %s."
+                 % (sys.argv[0], obseleteIndexFileName))
+      # end try
+    # end if
+  # end def
+  
   def runCommand(self, commandName, commandArguments):
     argumentCopy = [commandName] + commandArguments
     returnValue = os.spawnv(os.P_WAIT, commandName, argumentCopy)
@@ -359,6 +386,7 @@ def parseArgs(argv):
   # end if
   cutoffDate = None
   mountName = None
+  backupFlag = True
   argumentIndex = 1
   while 1:
     if argv[argumentIndex] == '-d':
@@ -380,6 +408,9 @@ def parseArgs(argv):
       # end if
       mountName = argv[argumentIndex + 1]
       argumentIndex += 2
+    elif argv[argumentIndex] == '-b':
+      backupFlag = False
+      argumentIndex += 1
     else:
       break
     # end if
@@ -387,7 +418,7 @@ def parseArgs(argv):
   archiveFileNameBase = sys.argv[argumentIndex]
   argumentIndex += 1
   targetNameList = sys.argv[argumentIndex:]
-  return archiveFileNameBase, cutoffDate, targetNameList, mountName
+  return archiveFileNameBase, cutoffDate, targetNameList, mountName, backupFlag
 # end def
 
 def parseDateString(dateString):
@@ -453,7 +484,7 @@ def parseRelativeDateString(dateString):
 
 def usage(progName):
   sys.stderr.write(
-    (('Usage: %s [-d yyyy-mm-dd] [-m mountName] archiveFileNameBase fileName0 '
+    (('Usage: %s [-d yyyy-mm-dd] [-m mountName] [-b] archiveFileNameBase fileName0 '
       % progName)
      + '[fileName1 [fileName2 ...] ]\n' 
      + '  For example:\n'
@@ -468,19 +499,31 @@ def usage(progName):
      + '  Supplying the -m option will cause the mount point to be mounted\n'
      + '    automatically, if necessary, and then unmounted automatically,\n'
      + '    if appropriate.\n\n'
-     + 'To prevent specific files/directories from being backed up, create a\n'
-     + 'file in the same directory as the not-to-be-backed up file/directory\n'
-     + 'that has the same name, plus an additional ".noBackup" extension.\n'
-     + 'For example:\n'
+     + '  If an archive already exists with the specified file name, the\n'
+     + '    files of that archive will be renamed by appending \'.backup\'\n'
+     + '    so that the existing archive is not lost.  If a backup archive\n'
+     + '    already exists, the backup will be deleted, and the new backup\n'
+     + '    will replace it.\n'
+     + '  \n'
+     + '  Supplying the -b option suppresses backing-up behavior, so any\n'
+     + '    existing archive with the specified filename will simply be\n'
+     + '    deleted and replaced.  This is useful if your backup drive has\n'
+     + '    limited space.\n'
+     + '  \n'
+     + 'To prevent specific files/directories from being included in the\n'
+     + 'archive, create a file in the same directory as the not-to-be-backed\n'
+     + 'up file/directory that has the same name, plus an additional\n'
+     + '".noBackup" extension.  For example:\n'
+     + '\n'
      + ' > mkdir ~/tmp\n'
-     + ' > touch ~/tmp.nobackup\n'
+     + ' > touch ~/tmp.noBackup\n'
      + ' > dd if=/dev/urandom of=~/useless.dat bs=1024 count=1024\n'
      + ' > touch ~/useless.dat.noBackup\n'))
 # end def
 
 
 if __name__=='__main__':
-  archiveFileNameBase, cutoffDate, targetNameList, mountName = (
+  archiveFileNameBase, cutoffDate, targetNameList, mountName, doBackup = (
     parseArgs(sys.argv))
 
   needsUmount = False
@@ -500,7 +543,7 @@ if __name__=='__main__':
   for targetName in targetNameList:
     # try:
       fileArchive = FileArchive(archiveFileNameBase, cutoffDate, targetName,
-                                archiveFileIndex)
+                                archiveFileIndex, backupFlag=doBackup)
       archiveFileIndex = fileArchive.numberOfVolumes()
       del fileArchive
     # except:
